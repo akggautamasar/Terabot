@@ -29,16 +29,18 @@ API_WORKER_3_BASE = 'https://terabox-pro-api.vercel.app/api' # Correctly parsed 
 
 # --- Helper Function to Escape Markdown V2 Special Characters ---
 def escape_markdown_v2(text: str) -> str:
-    """Helper function to escape special characters for MarkdownV2 parse_mode."""
-    # List of special characters that need to be escaped in MarkdownV2
-    # except for those used in bolding and links (which are handled by the PTB library)
-    # The characters !, ., -, +, {, }, (, ), #, | are not handled by PTB's auto-escaping
-    # in the middle of text, only if they are part of a URL or bold/italic markers.
-    # The `_` and `*` are context-dependent, but safer to escape if not meant for formatting.
-    # We will be general and escape all of them as they are not used for formatting in our custom text.
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    """
+    Helper function to escape special characters for MarkdownV2 parse_mode.
+    This is stricter for text *within* entities like links.
+    """
+    # Characters that need escaping in MarkdownV2.
+    # We are being comprehensive here.
+    # The order matters for some overlapping characters.
+    escape_chars = r'_*[]()~`>#+-=|{}.!\\' # Added backslash for self-escaping
+    
+    # Escape all characters in the defined set
+    # Using re.sub with a lambda to replace each character with its escaped version
     return re.sub(r'([{}])'.format(re.escape(escape_chars)), r'\\\1', text)
-
 
 # --- Helper Function to Extract Terabox Link ---
 def extract_terabox_link(text):
@@ -214,11 +216,14 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
             if not video_url.startswith(('http://', 'https://')):
                 raise ValueError(f"Invalid video URL received: {video_url}")
 
-            # Construct caption with escaped text parts
+            # Construct caption with escaped text parts and an escaped link text for the button
+            # Note: The URL itself in the link part [text](url) does NOT need escaping.
+            # Only the 'text' part of the link needs characters like ( and ) escaped.
             caption = (
-                f"🎬 *{escaped_title}*\n" # Use single * for italics as per example
+                f"🎬 *{escaped_title}*\n"
                 f"📦 Size: {escaped_size_str}\n\n"
-                f"[⬇️ Direct Download Link (Click here)]({video_url})"
+                # The text "Direct Download Link (Click here)" itself needs its parentheses escaped
+                f"[⬇️ Direct Download Link \\(Click here\\)]({video_url})" 
             )
             
             # Telegram's send_video supports URLs up to 2GB directly.
@@ -241,15 +246,15 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Error sending video to Telegram: {e}", exc_info=True) # Log full traceback
             await update.message.reply_text(
-                f"Sorry, I encountered an error while trying to send the video. It might be due to a problem with the video link itself or Telegram's limitations.\nError: `{e}`"
-                , parse_mode='Markdown' # Fallback to simpler Markdown for error messages
+                f"Sorry, I encountered an error while trying to send the video. It might be due to a problem with the video link itself or Telegram's limitations.\nError: `{escape_markdown_v2(str(e))}`" # Escape error message too
+                , parse_mode='MarkdownV2' # Keep MarkdownV2 for error messages
             )
             # As a fallback, send just the direct link as text
             if video_info.get('url'):
                 await update.message.reply_text(
-                    f"Here's the direct link you can try manually downloading:\n\n`{video_info['url']}`\n\n"
+                    f"Here's the direct link you can try manually downloading:\n\n`{escape_markdown_v2(video_info['url'])}`\n\n" # Escape URL in fallback
                     "Remember, some links may have playback restrictions."
-                    , parse_mode='Markdown' # Fallback to simpler Markdown for this message too
+                    , parse_mode='MarkdownV2' # Keep MarkdownV2 for fallback message too
                 )
     else:
         await update.message.reply_text(
@@ -308,7 +313,7 @@ def main() -> None:
     application_instance.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_terabox_link))
 
     # Set up webhook
-    # Render provides the PORT as an environment variable
+    # Render provides the PORT as an.environment variable
     port = int(os.environ.get("PORT", "8080")) # Default to 8080 if not set
     # WEBHOOK_URL should be set in Render environment variables
     webhook_base_url = os.environ.get("WEBHOOK_URL") 
@@ -336,4 +341,3 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-            
