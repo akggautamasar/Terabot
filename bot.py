@@ -291,7 +291,6 @@ def home():
 async def telegram_webhook():
     global application_instance
     if application_instance is None:
-        # This case should ideally not happen if setup_bot_application runs on startup
         logger.error("Telegram Application is not initialized in webhook handler.")
         return "Internal server error: Bot not ready", 500
 
@@ -310,6 +309,7 @@ async def telegram_webhook():
         logger.error(f"Failed to deserialize Update object: {e}", exc_info=True)
         return f"Internal Server Error: Failed to parse Telegram update. Error: {e}", 500
 
+    # Ensure this is awaited correctly for async views
     await application_instance.process_update(update)
     
     return jsonify({"status": "ok"})
@@ -323,20 +323,6 @@ if __name__ == '__main__':
     WEBHOOK_URL = os.getenv("WEBHOOK_URL")
     
     if WEBHOOK_URL:
-        # This part handles setting the webhook with Telegram.
-        # It's a one-time operation typically done on deployment/startup.
-        # It needs to be run in an async context, which we can simulate if needed,
-        # but Gunicorn just needs the Flask app.
-        # The key is to tell Telegram to send updates to WEBHOOK_URL/webhook.
-        # We can use PTB's setWebhook method directly.
-        # For a simple Flask app served by Gunicorn, you typically set the webhook
-        # with Telegram once, outside the main Flask app's runtime, or at startup
-        # if using the PTB Application to manage the webhook server.
-        
-        # When using Gunicorn, it runs the `app` object.
-        # We need to make sure the webhook is set with Telegram when the app starts up.
-        # We can do this by creating an async function and running it.
-        
         import asyncio
         async def set_telegram_webhook_once():
             webhook_full_url = f"{WEBHOOK_URL}/webhook"
@@ -347,14 +333,10 @@ if __name__ == '__main__':
             else:
                 logger.info(f"Telegram webhook already set to: {webhook_full_url}")
 
-        # Run the async webhook setup
         try:
             asyncio.run(set_telegram_webhook_once())
         except Exception as e:
             logger.error(f"Error setting Telegram webhook: {e}")
             
-    # Gunicorn will run the 'app' Flask instance directly.
-    # We do NOT call app.run() or application_instance.run_webhook() here.
-    # The `Procfile` will handle running Gunicorn, which then serves this `app`.
     logger.info("Bot logic initialized. Flask app ready for Gunicorn.")
 
