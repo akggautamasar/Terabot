@@ -248,9 +248,15 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         except Exception as e:
             logger.error(f"Error sending video to Telegram: {e}", exc_info=True) # Log full traceback
+            error_message_for_user = "an unknown error"
+            if "Failed to get http url content" in str(e):
+                error_message_for_user = "Telegram couldn't access the video content from the provided URL. The link might be expired or restricted."
+            elif "Can't parse entities" in str(e): # This shouldn't happen with latest escaping, but for robustness
+                error_message_for_user = "a formatting error in the message. Trying to fix it now."
+
             await update.message.reply_text(
-                f"Sorry, I encountered an error while trying to send the video. It might be due to a problem with the video link itself or Telegram's limitations.\nError: `{escape_markdown_v2(str(e))}`" # Escape error message too
-                , parse_mode='MarkdownV2' # Keep MarkdownV2 for error messages
+                f"Sorry, I encountered an error while trying to send the video: {error_message_for_user}\n\n"
+                "Please try clicking the direct link below."
             )
             # As a fallback, send just the direct link as text
             if video_info.get('url'):
