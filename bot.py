@@ -30,17 +30,20 @@ API_WORKER_3_BASE = 'https://terabox-pro-api.vercel.app/api' # Correctly parsed 
 # --- Helper Function to Escape Markdown V2 Special Characters ---
 def escape_markdown_v2(text: str) -> str:
     """
-    Helper function to escape special characters for MarkdownV2 parse_mode.
-    This is stricter for text *within* entities like links.
+    Helper function to escape all MarkdownV2 special characters.
+    This is necessary for any text that is NOT part of a Markdown entity (e.g., link URL, bold text content).
     """
-    # Characters that need escaping in MarkdownV2.
-    # We are being comprehensive here.
-    # The order matters for some overlapping characters.
-    escape_chars = r'_*[]()~`>#+-=|{}.!\\' # Added backslash for self-escaping
+    # List of all special characters that need to be escaped in MarkdownV2
+    # This list is from Telegram Bot API documentation.
+    # The order of replacement matters: escape backslash itself first.
+    special_chars = [
+        '\\', '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'
+    ]
     
-    # Escape all characters in the defined set
-    # Using re.sub with a lambda to replace each character with its escaped version
-    return re.sub(r'([{}])'.format(re.escape(escape_chars)), r'\\\1', text)
+    # Escape characters by replacing them with a backslash prefix
+    for char in special_chars:
+        text = text.replace(char, '\\' + char)
+    return text
 
 # --- Helper Function to Extract Terabox Link ---
 def extract_terabox_link(text):
@@ -206,7 +209,7 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         try:
             video_url = video_info['url']
             
-            # ESCAPE TITLE AND SIZE_STR FOR MARKDOWN V2
+            # ESCAPE TITLE AND SIZE_STR FOR MARKDOWN V2 using the improved function
             escaped_title = escape_markdown_v2(video_info.get('title', 'Terabox Video'))
             escaped_size_str = escape_markdown_v2(video_info.get('size', 'Unknown size'))
             
@@ -216,15 +219,15 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
             if not video_url.startswith(('http://', 'https://')):
                 raise ValueError(f"Invalid video URL received: {video_url}")
 
-            # Construct caption with escaped text parts and an escaped link text for the button
+            # Construct caption with escaped text parts and an explicitly escaped link text for the button
             # Note: The URL itself in the link part [text](url) does NOT need escaping.
-            # Only the 'text' part of the link needs characters like ( and ) escaped.
             caption = (
                 f"🎬 *{escaped_title}*\n"
                 f"📦 Size: {escaped_size_str}\n\n"
                 # The text "Direct Download Link (Click here)" itself needs its parentheses escaped
                 f"[⬇️ Direct Download Link \\(Click here\\)]({video_url})" 
             )
+            logger.info(f"Final caption to send: {caption}") # Log the final caption
             
             # Telegram's send_video supports URLs up to 2GB directly.
             # It will fetch the video from the provided URL.
@@ -252,7 +255,7 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
             # As a fallback, send just the direct link as text
             if video_info.get('url'):
                 await update.message.reply_text(
-                    f"Here's the direct link you can try manually downloading:\n\n`{escape_markdown_v2(video_info['url'])}`\n\n" # Escape URL in fallback
+                    f"Here's the direct link you can try manually downloading:\n\n`{escape_markdown_v2(video_info['url'])}`\n\n" # Escape URL in fallback for safety
                     "Remember, some links may have playback restrictions."
                     , parse_mode='MarkdownV2' # Keep MarkdownV2 for fallback message too
                 )
