@@ -180,6 +180,7 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
     for fetch_func, api_name in api_fetchers:
         logger.info(f"Trying {api_name}...")
         video_info = await fetch_func(terabox_link)
+        # Add a check for common "download down" messages from APIs
         if video_info and video_info.get('url') and "download feature is currently down" not in video_info['url'].lower():
             logger.info(f"Successfully got info from {api_name}")
             break
@@ -205,7 +206,7 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                 video=video_url,
                 caption=caption,
                 parse_mode='Markdown',
-                thumbnail=thumbnail_url,
+                thumbnail=thumbnail_url, # Pass thumbnail URL directly
                 read_timeout=60, # Increased timeout for large files
                 write_timeout=60,
                 connect_timeout=60
@@ -236,7 +237,7 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # --- Flask App for Webhooks ---
 app = Flask(__name__)
-application = None # Global variable to hold the PTB Application instance
+application_instance = None # Global variable to hold the PTB Application instance
 
 @app.route('/', methods=['GET'])
 def home():
@@ -244,52 +245,76 @@ def home():
 
 @app.route('/webhook', methods=['POST'])
 async def telegram_webhook():
-    global application
-    if application is None:
+    global application_instance
+    if application_instance is None:
         logger.error("Telegram Application is not initialized.")
         return "Internal server error: Bot not ready", 500
 
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    
+    # Ensure the request body is valid JSON
+    if not request.is_json:
+        logger.warning("Webhook received non-JSON request.")
+        return "Bad Request: Content-Type must be application/json", 400
+
+    update_data = request.get_json(force=True)
+    if not update_data:
+        logger.warning("Webhook received empty JSON or failed to parse.")
+        return "Bad Request: Empty or invalid JSON payload", 400
+
+    try:
+        update = Update.de_json(update_data, application_instance.bot)
+    except Exception as e:
+        logger.error(f"Failed to deserialize Update object: {e}", exc_info=True)
+        return f"Internal Server Error: Failed to parse Telegram update. Error: {e}", 500
+
     # Process the update using the PTB dispatcher
     # For webhook, process_update runs synchronously from the Flask route.
     # It requires the update object directly.
-    await application.process_update(update)
+    await application_instance.process_update(update)
     
     return jsonify({"status": "ok"})
 
 def main() -> None:
     """Sets up and runs the bot with webhooks."""
-    global application
+    global application_instance
     
-    application = Application.builder().token(BOT_TOKEN).build()
+    application_instance = Application.builder().token(BOT_TOKEN).build()
 
     # Add command handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
+    application_instance.add_handler(CommandHandler("start", start))
+    application_instance.add_handler(CommandHandler("help", help_command))
 
     # Add message handler for all text messages
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_terabox_link))
+    application_instance.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_terabox_link))
 
     # Set up webhook
     # Render provides the PORT as an environment variable
     port = int(os.environ.get("PORT", "8080")) # Default to 8080 if not set
-    webhook_url = os.environ.get("WEBHOOK_URL") # This needs to be set in Render env
+    # WEBHOOK_URL should be set in Render environment variables
+    webhook_base_url = os.environ.get("WEBHOOK_URL") 
 
-    if not webhook_url:
-        logger.error("WEBHOOK_URL environment variable not set. Webhook will not be set.")
+    if not webhook_base_url:
+        logger.error("WEBHOOK_URL environment variable not set. Fallback to long-polling.")
         logger.info("Running locally for development (long-polling fallback)...")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        application_instance.run_polling(allowed_updates=Update.ALL_TYPES)
     else:
-        logger.info(f"Setting webhook to {webhook_url}/webhook")
-        application.run_webhook(
+        # Set the webhook with Telegram
+        webhook_full_url = f"{webhook_base_url}/webhook"
+        logger.info(f"Setting webhook to {webhook_full_url}")
+        
+        # Use an awaitable method to set the webhook
+        # This needs to be done in an async context, which application.run_webhook provides
+        # Or you can do it manually once with a separate script/function.
+        
+        # Start the webhook server
+        application_instance.run_webhook(
             listen="0.0.0.0",
             port=port,
             url_path="webhook", # This must match the Flask route
-            webhook_url=f"{webhook_url}/webhook"
+            webhook_url=webhook_full_url # The full URL Telegram will call
         )
         logger.info(f"Flask app running on port {port}")
-        app.run(host="0.0.0.0", port=port) # Run Flask app
+        # The Flask app is implicitly run by application.run_webhook
+        # No need for app.run() here if using run_webhook, as PTB handles the server.
 
 if __name__ == "__main__":
     main()
