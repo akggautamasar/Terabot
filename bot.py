@@ -224,7 +224,6 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
             caption = (
                 f"🎬 *{escaped_title}*\n"
                 f"📦 Size: {escaped_size_str}\n\n"
-                # The text "Direct Download Link (Click here)" itself needs its parentheses escaped
                 f"[⬇️ Direct Download Link \\(Click here\\)]({video_url})" 
             )
             logger.info(f"Final caption to send: {caption}") # Log the final caption
@@ -251,7 +250,7 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
             error_message_for_user = "an unknown error"
             if "Failed to get http url content" in str(e):
                 error_message_for_user = "Telegram couldn't access the video content from the provided URL. The link might be expired or restricted."
-            elif "Can't parse entities" in str(e): # This shouldn't happen with latest escaping, but for robustness
+            elif "Can't parse entities" in str(e): 
                 error_message_for_user = "a formatting error in the message. Trying to fix it now."
 
             await update.message.reply_text(
@@ -261,9 +260,9 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
             # As a fallback, send just the direct link as text
             if video_info.get('url'):
                 await update.message.reply_text(
-                    f"Here's the direct link you can try manually downloading:\n\n`{escape_markdown_v2(video_info['url'])}`\n\n" # Escape URL in fallback for safety
+                    f"Here's the direct link you can try manually downloading:\n\n`{escape_markdown_v2(video_info['url'])}`\n\n" 
                     "Remember, some links may have playback restrictions."
-                    , parse_mode='MarkdownV2' # Keep MarkdownV2 for fallback message too
+                    , parse_mode='MarkdownV2' 
                 )
     else:
         await update.message.reply_text(
@@ -274,18 +273,28 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
 app = Flask(__name__)
 application_instance = None # Global variable to hold the PTB Application instance
 
+# This setup will run once on startup for webhook registration
+def setup_bot_application():
+    global application_instance
+    if application_instance is None:
+        application_instance = Application.builder().token(BOT_TOKEN).build()
+        application_instance.add_handler(CommandHandler("start", start))
+        application_instance.add_handler(CommandHandler("help", help_command))
+        application_instance.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_terabox_link))
+        logger.info("Telegram Application initialized and handlers added.")
+
 @app.route('/', methods=['GET'])
 def home():
-    return "Terabox Telegram Bot is running!"
+    return "Terabox Telegram Bot is running! Visit /webhook for Telegram updates."
 
 @app.route('/webhook', methods=['POST'])
 async def telegram_webhook():
     global application_instance
     if application_instance is None:
-        logger.error("Telegram Application is not initialized.")
+        # This case should ideally not happen if setup_bot_application runs on startup
+        logger.error("Telegram Application is not initialized in webhook handler.")
         return "Internal server error: Bot not ready", 500
 
-    # Ensure the request body is valid JSON
     if not request.is_json:
         logger.warning("Webhook received non-JSON request.")
         return "Bad Request: Content-Type must be application/json", 400
@@ -301,52 +310,51 @@ async def telegram_webhook():
         logger.error(f"Failed to deserialize Update object: {e}", exc_info=True)
         return f"Internal Server Error: Failed to parse Telegram update. Error: {e}", 500
 
-    # Process the update using the PTB dispatcher
-    # For webhook, process_update runs synchronously from the Flask route.
-    # It requires the update object directly.
     await application_instance.process_update(update)
     
     return jsonify({"status": "ok"})
 
-def main() -> None:
-    """Sets up and runs the bot with webhooks."""
-    global application_instance
+# This part is now cleaner for Gunicorn
+if __name__ == '__main__':
+    # Initialize the bot application instance
+    setup_bot_application()
+
+    # Get webhook URL from environment variable
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
     
-    application_instance = Application.builder().token(BOT_TOKEN).build()
-
-    # Add command handlers
-    application_instance.add_handler(CommandHandler("start", start))
-    application_instance.add_handler(CommandHandler("help", help_command))
-
-    # Add message handler for all text messages
-    application_instance.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_terabox_link))
-
-    # Set up webhook
-    # Render provides the PORT as an.environment variable
-    port = int(os.environ.get("PORT", "8080")) # Default to 8080 if not set
-    # WEBHOOK_URL should be set in Render environment variables
-    webhook_base_url = os.environ.get("WEBHOOK_URL") 
-
-    if not webhook_base_url:
-        logger.error("WEBHOOK_URL environment variable not set. Fallback to long-polling.")
-        logger.info("Running locally for development (long-polling fallback)...")
-        application_instance.run_polling(allowed_updates=Update.ALL_TYPES)
-    else:
-        # Set the webhook with Telegram
-        webhook_full_url = f"{webhook_base_url}/webhook"
-        logger.info(f"Setting webhook to {webhook_full_url}")
+    if WEBHOOK_URL:
+        # This part handles setting the webhook with Telegram.
+        # It's a one-time operation typically done on deployment/startup.
+        # It needs to be run in an async context, which we can simulate if needed,
+        # but Gunicorn just needs the Flask app.
+        # The key is to tell Telegram to send updates to WEBHOOK_URL/webhook.
+        # We can use PTB's setWebhook method directly.
+        # For a simple Flask app served by Gunicorn, you typically set the webhook
+        # with Telegram once, outside the main Flask app's runtime, or at startup
+        # if using the PTB Application to manage the webhook server.
         
-        # Start the webhook server
-        application_instance.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path="webhook", # This must match the Flask route
-            webhook_url=webhook_full_url # The full URL Telegram will call
-        )
-        logger.info(f"Flask app running on port {port}")
-        # The Flask app is implicitly run by application.run_webhook
-        # No need for app.run() here if using run_webhook, as PTB handles the server.
+        # When using Gunicorn, it runs the `app` object.
+        # We need to make sure the webhook is set with Telegram when the app starts up.
+        # We can do this by creating an async function and running it.
+        
+        import asyncio
+        async def set_telegram_webhook_once():
+            webhook_full_url = f"{WEBHOOK_URL}/webhook"
+            current_webhook_info = await application_instance.bot.get_webhook_info()
+            if current_webhook_info.url != webhook_full_url:
+                logger.info(f"Setting Telegram webhook to: {webhook_full_url}")
+                await application_instance.bot.set_webhook(url=webhook_full_url)
+            else:
+                logger.info(f"Telegram webhook already set to: {webhook_full_url}")
 
-if __name__ == "__main__":
-    main()
+        # Run the async webhook setup
+        try:
+            asyncio.run(set_telegram_webhook_once())
+        except Exception as e:
+            logger.error(f"Error setting Telegram webhook: {e}")
+            
+    # Gunicorn will run the 'app' Flask instance directly.
+    # We do NOT call app.run() or application_instance.run_webhook() here.
+    # The `Procfile` will handle running Gunicorn, which then serves this `app`.
+    logger.info("Bot logic initialized. Flask app ready for Gunicorn.")
 
