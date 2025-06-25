@@ -27,6 +27,19 @@ API_WORKER_1_BASE = 'https://tera.iqbalalam8675.workers.dev/'
 API_WORKER_2_BASE = 'https://teraboxapi.thory.workers.dev/api'
 API_WORKER_3_BASE = 'https://terabox-pro-api.vercel.app/api' # Correctly parsed now
 
+# --- Helper Function to Escape Markdown V2 Special Characters ---
+def escape_markdown_v2(text: str) -> str:
+    """Helper function to escape special characters for MarkdownV2 parse_mode."""
+    # List of special characters that need to be escaped in MarkdownV2
+    # except for those used in bolding and links (which are handled by the PTB library)
+    # The characters !, ., -, +, {, }, (, ), #, | are not handled by PTB's auto-escaping
+    # in the middle of text, only if they are part of a URL or bold/italic markers.
+    # The `_` and `*` are context-dependent, but safer to escape if not meant for formatting.
+    # We will be general and escape all of them as they are not used for formatting in our custom text.
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(r'([{}])'.format(re.escape(escape_chars)), r'\\\1', text)
+
+
 # --- Helper Function to Extract Terabox Link ---
 def extract_terabox_link(text):
     """
@@ -190,22 +203,30 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
     if video_info and video_info.get('url'):
         try:
             video_url = video_info['url']
-            title = video_info.get('title', 'Terabox Video')
-            size_str = video_info.get('size', 'Unknown size')
+            
+            # ESCAPE TITLE AND SIZE_STR FOR MARKDOWN V2
+            escaped_title = escape_markdown_v2(video_info.get('title', 'Terabox Video'))
+            escaped_size_str = escape_markdown_v2(video_info.get('size', 'Unknown size'))
+            
             thumbnail_url = video_info.get('thumbnail')
 
             # Ensure the video_url is a valid HTTP/HTTPS URL
             if not video_url.startswith(('http://', 'https://')):
                 raise ValueError(f"Invalid video URL received: {video_url}")
 
-            caption = f"🎬 **{title}**\n📦 Size: {size_str}\n\n[⬇️ Direct Download Link (Click here)]({video_url})"
+            # Construct caption with escaped text parts
+            caption = (
+                f"🎬 *{escaped_title}*\n" # Use single * for italics as per example
+                f"📦 Size: {escaped_size_str}\n\n"
+                f"[⬇️ Direct Download Link (Click here)]({video_url})"
+            )
             
             # Telegram's send_video supports URLs up to 2GB directly.
             # It will fetch the video from the provided URL.
             await update.message.reply_video(
                 video=video_url,
                 caption=caption,
-                parse_mode='Markdown',
+                parse_mode='MarkdownV2', # Explicitly use MarkdownV2
                 thumbnail=thumbnail_url, # Pass thumbnail URL directly
                 read_timeout=60, # Increased timeout for large files
                 write_timeout=60,
@@ -221,14 +242,14 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
             logger.error(f"Error sending video to Telegram: {e}", exc_info=True) # Log full traceback
             await update.message.reply_text(
                 f"Sorry, I encountered an error while trying to send the video. It might be due to a problem with the video link itself or Telegram's limitations.\nError: `{e}`"
-                , parse_mode='Markdown'
+                , parse_mode='Markdown' # Fallback to simpler Markdown for error messages
             )
             # As a fallback, send just the direct link as text
             if video_info.get('url'):
                 await update.message.reply_text(
                     f"Here's the direct link you can try manually downloading:\n\n`{video_info['url']}`\n\n"
                     "Remember, some links may have playback restrictions."
-                    , parse_mode='Markdown'
+                    , parse_mode='Markdown' # Fallback to simpler Markdown for this message too
                 )
     else:
         await update.message.reply_text(
@@ -301,10 +322,6 @@ def main() -> None:
         webhook_full_url = f"{webhook_base_url}/webhook"
         logger.info(f"Setting webhook to {webhook_full_url}")
         
-        # Use an awaitable method to set the webhook
-        # This needs to be done in an async context, which application.run_webhook provides
-        # Or you can do it manually once with a separate script/function.
-        
         # Start the webhook server
         application_instance.run_webhook(
             listen="0.0.0.0",
@@ -319,3 +336,4 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
+            
